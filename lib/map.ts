@@ -2,6 +2,78 @@ import { Driver, MarkerData } from "@/types/type";
 
 const directionsAPI = process.env.EXPO_PUBLIC_DIRECTIONS_API_KEY;
 
+const getRouteDurationSeconds = async ({
+  originLatitude,
+  originLongitude,
+  destinationLatitude,
+  destinationLongitude,
+}: {
+  originLatitude: number;
+  originLongitude: number;
+  destinationLatitude: number;
+  destinationLongitude: number;
+}) => {
+  if (!directionsAPI) {
+    return 0;
+  }
+
+  const routeRequest = {
+    origin: {
+      location: {
+        latLng: {
+          latitude: originLatitude,
+          longitude: originLongitude,
+        },
+      },
+    },
+    destination: {
+      location: {
+        latLng: {
+          latitude: destinationLatitude,
+          longitude: destinationLongitude,
+        },
+      },
+    },
+    travelMode: "DRIVE",
+    routingPreference: "TRAFFIC_AWARE_OPTIMAL",
+    languageCode: "en-US",
+  };
+
+  try {
+    const response = await fetch(
+      "https://routes.googleapis.com/directions/v2:computeRoutes",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Goog-Api-Key": directionsAPI,
+          "X-Goog-FieldMask": "routes.duration",
+        },
+        body: JSON.stringify(routeRequest),
+      },
+    );
+
+    if (!response.ok) {
+      throw new Error(`Routes API error: ${response.status}`);
+    }
+
+    const data = await response.json();
+    const durationValue = data.routes?.[0]?.duration ?? "0s";
+    return Number.parseFloat(durationValue.replace(/s$/, "")) || 0;
+  } catch (error) {
+    console.warn(
+      "Routes API failed, falling back to legacy directions API:",
+      error,
+    );
+
+    const legacyResponse = await fetch(
+      `https://maps.googleapis.com/maps/api/directions/json?origin=${originLatitude},${originLongitude}&destination=${destinationLatitude},${destinationLongitude}&key=${directionsAPI}`,
+    );
+    const legacyData = await legacyResponse.json();
+    return legacyData.routes?.[0]?.legs?.[0]?.duration?.value ?? 0;
+  }
+};
+
 export const generateMarkersFromData = ({
   data,
   userLatitude,
@@ -95,21 +167,22 @@ export const calculateDriverTimes = async ({
 
   try {
     const timesPromises = markers.map(async (marker) => {
-      const responseToUser = await fetch(
-        `https://maps.googleapis.com/maps/api/directions/json?origin=${marker.latitude},${marker.longitude}&destination=${userLatitude},${userLongitude}&key=${directionsAPI}`,
-      );
-      const dataToUser = await responseToUser.json();
-      const timeToUser = dataToUser.routes[0].legs[0].duration.value; // Time in seconds
+      const timeToUser = await getRouteDurationSeconds({
+        originLatitude: marker.latitude,
+        originLongitude: marker.longitude,
+        destinationLatitude: userLatitude,
+        destinationLongitude: userLongitude,
+      });
 
-      const responseToDestination = await fetch(
-        `https://maps.googleapis.com/maps/api/directions/json?origin=${userLatitude},${userLongitude}&destination=${destinationLatitude},${destinationLongitude}&key=${directionsAPI}`,
-      );
-      const dataToDestination = await responseToDestination.json();
-      const timeToDestination =
-        dataToDestination.routes[0].legs[0].duration.value; // Time in seconds
+      const timeToDestination = await getRouteDurationSeconds({
+        originLatitude: userLatitude,
+        originLongitude: userLongitude,
+        destinationLatitude,
+        destinationLongitude,
+      });
 
-      const totalTime = (timeToUser + timeToDestination) / 60; // Total time in minutes
-      const price = (totalTime * 0.5).toFixed(2); // Calculate price based on time
+      const totalTime = (timeToUser + timeToDestination) / 60;
+      const price = (totalTime * 0.5).toFixed(2);
 
       return { ...marker, time: totalTime, price };
     });

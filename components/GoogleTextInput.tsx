@@ -1,10 +1,91 @@
-import { View, Image } from "react-native";
-import { GooglePlacesAutocomplete } from "react-native-google-places-autocomplete";
+import { useEffect, useState } from "react";
+import { Image, Text, TextInput, TouchableOpacity, View } from "react-native";
 
 import { icons } from "@/constants";
 import { GoogleInputProps } from "@/types/type";
 
 const googlePlacesApiKey = process.env.EXPO_PUBLIC_PLACES_API_KEY;
+
+const getPlaceSuggestions = async (input: string) => {
+  if (!googlePlacesApiKey || input.trim().length < 2) {
+    return [];
+  }
+
+  const response = await fetch(
+    "https://places.googleapis.com/v1/places:autocomplete",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": googlePlacesApiKey,
+        "X-Goog-FieldMask":
+          "suggestions.placePrediction.placeId,suggestions.placePrediction.text,suggestions.placePrediction.structuredFormat",
+      },
+      body: JSON.stringify({
+        input,
+        languageCode: "en",
+        includedPrimaryTypes: ["airport", "restaurant", "geocode", "locality"],
+      }),
+    },
+  );
+
+  if (!response.ok) {
+    return [];
+  }
+
+  const data = await response.json();
+
+  return (data.suggestions ?? [])
+    .map((suggestion: any) => {
+      const prediction = suggestion.placePrediction ?? {};
+      const mainText =
+        prediction.structuredFormat?.mainText?.text ??
+        prediction.text?.text ??
+        "";
+      const secondaryText =
+        prediction.structuredFormat?.secondaryText?.text ?? "";
+
+      return {
+        place_id: prediction.placeId ?? "",
+        description: prediction.text?.text ?? mainText,
+        displayText: secondaryText
+          ? `${mainText} · ${secondaryText}`
+          : mainText,
+      };
+    })
+    .filter((item: any) => item.place_id && item.description);
+};
+
+const getPlaceDetails = async (placeId: string) => {
+  if (!googlePlacesApiKey || !placeId) {
+    return null;
+  }
+
+  const response = await fetch(
+    `https://places.googleapis.com/v1/places/${placeId}?fields=id,displayName,formattedAddress,location`,
+    {
+      method: "GET",
+      headers: {
+        "X-Goog-Api-Key": googlePlacesApiKey,
+        "X-Goog-FieldMask": "id,displayName,formattedAddress,location",
+      },
+    },
+  );
+
+  if (!response.ok) {
+    return null;
+  }
+
+  const data = await response.json();
+  const location = data.location ?? {};
+
+  return {
+    latitude: location.latitude ?? 0,
+    longitude: location.longitude ?? 0,
+    address:
+      data.formattedAddress ?? data.displayName?.text ?? "Selected location",
+  };
+};
 
 const GoogleTextInput = ({
   icon,
@@ -13,70 +94,96 @@ const GoogleTextInput = ({
   textInputBackgroundColor,
   handlePress,
 }: GoogleInputProps) => {
+  const [value, setValue] = useState(initialLocation ?? "");
+  const [suggestions, setSuggestions] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    setValue(initialLocation ?? "");
+  }, [initialLocation]);
+
+  useEffect(() => {
+    const trimmedValue = value.trim();
+    if (!trimmedValue) {
+      setSuggestions([]);
+      return;
+    }
+
+    const timeoutId = setTimeout(async () => {
+      setLoading(true);
+      try {
+        const results = await getPlaceSuggestions(trimmedValue);
+        setSuggestions(results);
+      } catch (error) {
+        setSuggestions([]);
+      } finally {
+        setLoading(false);
+      }
+    }, 250);
+
+    return () => clearTimeout(timeoutId);
+  }, [value]);
+
+  const handleSuggestionPress = async (suggestion: any) => {
+    const details = await getPlaceDetails(suggestion.place_id);
+    const selectedAddress = details?.address ?? suggestion.description;
+
+    setValue(selectedAddress);
+    setSuggestions([]);
+
+    handlePress({
+      latitude: details?.latitude ?? 0,
+      longitude: details?.longitude ?? 0,
+      address: selectedAddress,
+    });
+  };
+
   return (
-    <View
-      className={`flex flex-row items-center justify-center relative z-50 rounded-xl ${containerStyle}`}
-    >
-      <GooglePlacesAutocomplete
-        fetchDetails={true}
-        placeholder="Search"
-        debounce={200}
-        styles={{
-          textInputContainer: {
-            alignItems: "center",
-            justifyContent: "center",
-            borderRadius: 20,
-            marginHorizontal: 20,
-            position: "relative",
-            shadowColor: "#d4d4d4",
-          },
-          textInput: {
-            backgroundColor: textInputBackgroundColor
-              ? textInputBackgroundColor
-              : "white",
-            fontSize: 16,
-            fontWeight: "600",
-            marginTop: 5,
-            width: "100%",
-            borderRadius: 200,
-          },
-          listView: {
-            backgroundColor: textInputBackgroundColor
-              ? textInputBackgroundColor
-              : "white",
-            position: "relative",
-            top: 0,
-            width: "100%",
-            borderRadius: 10,
-            shadowColor: "#d4d4d4",
-            zIndex: 99,
-          },
-        }}
-        onPress={(data, details = null) => {
-          handlePress({
-            latitude: details?.geometry.location.lat!,
-            longitude: details?.geometry.location.lng!,
-            address: data.description,
-          });
-        }}
-        query={{
-          key: googlePlacesApiKey,
-          language: "en",
-        }}
-        renderLeftButton={() => (
-          <View className="justify-center items-center w-6 h-6">
-            <Image
-              source={icon ? icon : icons.search}
-              className="w-6 h-6"
-              resizeMode="contain"
-            />
-          </View>
-        )}
-        textInputProps={{
-          placeholderTextColor: "gray",
-          placeholder: initialLocation ?? "Where do you want to go?",
-        }}
-      />
+    <View className={`relative z-50 rounded-xl ${containerStyle}`}>
+      <View className="flex-row items-center justify-center rounded-xl">
+        <View className="justify-center items-center w-10 h-10">
+          <Image
+            source={icon ? icon : icons.search}
+            className="w-6 h-6"
+            resizeMode="contain"
+          />
+        </View>
+
+        <TextInput
+          value={value}
+          onChangeText={setValue}
+          placeholder={initialLocation ?? "Where do you want to go?"}
+          placeholderTextColor="gray"
+          autoCapitalize="none"
+          autoCorrect={false}
+          className="flex-1 h-12 pl-2 text-base font-JakartaMedium"
+          style={{
+            backgroundColor: textInputBackgroundColor ?? "white",
+          }}
+        />
+      </View>
+
+      {loading && (
+        <View className="mt-2 rounded-lg bg-white px-3 py-2">
+          <Text className="text-xs text-gray-500">Searching locations...</Text>
+        </View>
+      )}
+
+      {suggestions.length > 0 && (
+        <View className="mt-2 rounded-xl bg-white shadow-sm shadow-neutral-300 overflow-hidden">
+          {suggestions.map((item) => (
+            <TouchableOpacity
+              key={item.place_id}
+              onPress={() => handleSuggestionPress(item)}
+              className="border-b border-neutral-200 px-3 py-3"
+            >
+              <Text className="text-sm font-JakartaMedium text-neutral-800">
+                {item.displayText}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      )}
     </View>
   );
 };
